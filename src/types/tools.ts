@@ -1351,6 +1351,10 @@ export type PTCToolCall = {
  * Tool result sent back to the Code API
  */
 export type PTCToolResult = {
+  /** Host-only attachment metadata; never transmitted to Code API. */
+  mcp_files?: object[];
+  /** Owned input files to mount before this tool call resumes. */
+  files?: CodeEnvFile[];
   /** Matches PTCToolCall.id */
   call_id: string;
   /** Tool execution result (any JSON-serializable value) */
@@ -1366,6 +1370,7 @@ export type PTCToolResult = {
  * Response from the Code API for programmatic execution
  */
 export type ProgrammaticExecutionResponse = {
+  continuation_files?: 1;
   status: 'tool_call_required' | 'completed' | 'error' | unknown;
   /** Execution session — see `CodeSessionContext.session_id`. */
   session_id?: string;
@@ -1395,6 +1400,7 @@ export type ProgrammaticExecutionResponse = {
  * Artifact returned by the PTC tool
  */
 export type ProgrammaticExecutionArtifact = {
+  mcp_files?: object[];
   /** Execution session — see `CodeSessionContext.session_id`. */
   session_id?: string;
   files?: FileRefs;
