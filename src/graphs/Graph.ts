@@ -176,6 +176,10 @@ import {
   createRemoveAllMessage,
   messagesStateReducer,
 } from '@/messages/reducer';
+import {
+  isThinkingEnabled,
+  getConfiguredCompletionTokens,
+} from '@/llm/request';
 import { createToolHistoryPreparation } from '@/messages/toolHistoryProjection';
 import { ToolNode as CustomToolNode, toolsCondition } from '@/tools/ToolNode';
 import { shouldTraceToolNodeForLangfuse } from '@/langfuseToolOutputTracing';
@@ -200,7 +204,6 @@ import { AgentContext } from '@/agents/AgentContext';
 import { createFakeStreamingLLM } from '@/llm/fake';
 import { handoffStateAnnotation } from './handoff';
 import { handleToolCalls } from '@/tools/handlers';
-import { isThinkingEnabled } from '@/llm/request';
 import { resolveMaxSeals } from '@/llm/preempt';
 import { initializeModel } from '@/llm/init';
 import { HandlerRegistry } from '@/events';
@@ -483,26 +486,6 @@ function clearCurrentDeltaStepMarkers({
     graph.messageStepHasTextDeltas.delete(stepId);
     graph.reasoningStepHasDeltas.delete(stepId);
   }
-}
-
-/**
- * The completion allowance the caller configured, under whichever key the
- * provider's client uses. Providers count it against the same ceiling as the
- * prompt, so overflow recovery has to reserve it when the error did not
- * itemize the total.
- */
-function getConfiguredCompletionTokens(
-  clientOptions: t.ClientOptions | undefined
-): number | undefined {
-  const options = clientOptions as
-    | { maxTokens?: unknown; maxOutputTokens?: unknown }
-    | undefined;
-  for (const value of [options?.maxTokens, options?.maxOutputTokens]) {
-    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
-      return value;
-    }
-  }
-  return undefined;
 }
 
 /**
@@ -3133,6 +3116,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
     config,
     originalToolContent,
     estimatedPromptTokens,
+    windowMessages,
   }: {
     recovery: OverflowRecoveryPlan;
     agentContext: AgentContext;
@@ -3142,6 +3126,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
     originalToolContent?: Map<number, string>;
     /** Size of the rejected prompt, recorded to detect a correction that changed nothing. */
     estimatedPromptTokens?: number;
+    windowMessages: BaseMessage[];
   }): Partial<t.AgentSubgraphState> {
     const previousBudget = agentContext.maxContextTokens;
     /**
@@ -3189,6 +3174,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
         remainingContextTokens: 0,
         agentId: agentId || agentContext.agentId,
         reason: 'overflow',
+        windowMessages,
         allowSummarization,
       },
     };
@@ -3225,12 +3211,14 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
     agentContext,
     agentId,
     messageCount,
+    windowMessages,
     contextUsage,
     config,
   }: {
     agentContext: AgentContext;
     agentId: string;
     messageCount: number;
+    windowMessages: BaseMessage[];
     contextUsage: t.ContextUsageEvent | null;
     config: RunnableConfig;
   }): Promise<Partial<t.AgentSubgraphState> | null> {
@@ -3262,6 +3250,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
           remainingContextTokens: contextUsage?.remainingContextTokens ?? 0,
           agentId: agentId || agentContext.agentId,
           reason: 'manual',
+          windowMessages,
         },
         /** A checkpointed thread may still hold the previous compaction's
          *  summary; only the one this run produces may be reported. */
@@ -3484,6 +3473,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
           agentContext,
           agentId,
           messageCount: messages.length,
+          windowMessages: context,
           contextUsage,
           config,
         });
@@ -3541,6 +3531,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
             return {
               summarizationRequest: {
                 remainingContextTokens: remainingContextTokens ?? 0,
+                windowMessages: context,
                 agentId: agentId || agentContext.agentId,
               },
             };
@@ -3570,6 +3561,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
           agentContext,
           agentId,
           messageCount: messages.length,
+          windowMessages: messagesToUse,
           contextUsage: null,
           config,
         });
@@ -4554,6 +4546,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
             instructionTokens: agentContext.instructionTokens,
             canSummarize: agentContext.summarizationEnabled === true,
             configuredCompletionTokens: getConfiguredCompletionTokens(
+              fallbackContext?.provider ?? agentContext.provider,
               fallbackContext?.clientOptions ?? agentContext.clientOptions
             ),
             attemptsSoFar: agentContext.overflowRecoveryAttempts,
@@ -4596,6 +4589,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
             agentId,
             config,
             originalToolContent: prunedOriginalToolContent,
+            windowMessages: messagesToUse,
             estimatedPromptTokens: recoveryPromptEstimate,
           });
         }
@@ -4830,6 +4824,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, t.GraphNode> {
             agentId,
             config,
             originalToolContent: prunedOriginalToolContent,
+            windowMessages: messagesToUse,
             estimatedPromptTokens: fallbackRecoveryPromptEstimate,
           });
         }
